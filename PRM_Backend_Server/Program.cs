@@ -30,7 +30,7 @@ namespace PRM_Backend_Server
                 app.UseSwaggerUI();
             }
 
-            app.UseHttpsRedirection();
+            //app.UseHttpsRedirection();
 
             app.UseAuthorization();
 

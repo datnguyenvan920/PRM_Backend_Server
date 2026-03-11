@@ -39,7 +39,7 @@ namespace PRM_Backend_Server.Controllers
             var passwordHash = HashPassword(request.password);
             var user = new User
             {
-                FullName = request.email,
+                FullName = request.name,
                 Email = request.email,
                 Phone = request.phone ?? string.Empty,
                 Address = request.address,
