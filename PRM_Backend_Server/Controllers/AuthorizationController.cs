@@ -6,6 +6,10 @@ using PRM_Backend_Server.Models;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.AspNetCore.Authorization;
 
 namespace PRM_Backend_Server.Controllers
 {
@@ -15,25 +19,27 @@ namespace PRM_Backend_Server.Controllers
     {
         private readonly HomeServiceAppContext _db;
         private readonly ILogger<AuthorizationController> _logger;
+        private readonly IConfiguration _configuration;
 
-        public AuthorizationController(HomeServiceAppContext db, ILogger<AuthorizationController> logger)
+        public AuthorizationController(HomeServiceAppContext db, ILogger<AuthorizationController> logger, IConfiguration configuration)
         {
             _db = db;
             _logger = logger;
+            _configuration = configuration;
         }
 
         [HttpPost("register")]
         public async Task<ActionResult<AuthorizationResponse.RegisterResponse>> Register([FromBody] AuthorizationRequest.RegisterRequest request)
         {
             if (request == null)
-                return BadRequest(new AuthorizationResponse.RegisterResponse { message = "Invalid request" });
+                return BadRequest(new AuthorizationResponse.RegisterResponse { message = "Invalid request, step:1" });
 
             if (request.password != request.confirmPassword)
-                return BadRequest(new AuthorizationResponse.RegisterResponse { message = "Password and confirm password do not match" });
+                return BadRequest(new AuthorizationResponse.RegisterResponse { message = "Password and confirm password do not match, step:2" });
 
             var exists = await _db.Users.AnyAsync(u => u.Email == request.email);
             if (exists)
-                return Conflict(new AuthorizationResponse.RegisterResponse { message = "Email already registered" });
+                return Conflict(new AuthorizationResponse.RegisterResponse { message = "Email already registered, step:3" });
 
             // create user
             var passwordHash = HashPassword(request.password);
@@ -58,18 +64,22 @@ namespace PRM_Backend_Server.Controllers
         public async Task<ActionResult<AuthorizationResponse.LoginResponse>> Login([FromBody] AuthorizationRequest.LoginRequest request)
         {
             if (request == null)
-                return BadRequest(new AuthorizationResponse.LoginResponse { message = "Invalid request" });
+                return BadRequest(new AuthorizationResponse.LoginResponse { message = "Invalid request, step:1" });
 
             var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == request.email);
             if (user == null)
-                return Unauthorized(new AuthorizationResponse.LoginResponse { message = "Invalid credentials" });
+                return Unauthorized(new AuthorizationResponse.LoginResponse { message = "Invalid credentials, step:2" });
 
             if (!VerifyPassword(request.password, user.PasswordHash))
-                return Unauthorized(new AuthorizationResponse.LoginResponse { message = "Invalid credentials" });
+                return Unauthorized(new AuthorizationResponse.LoginResponse { message = "Invalid credentials, step:3" });
 
+            var accessToken = GenerateJwtToken(user);
             // generate tokens (simple GUID-based tokens for demo)
-            var accessToken = Guid.NewGuid().ToString();
             var refreshToken = Guid.NewGuid().ToString();
+
+            user.RefreshToken = refreshToken;
+            user.RefreshTokenExpirationTime = DateTime.UtcNow.AddDays(7);
+            _db.Users.Update(user);
 
             return Ok(new AuthorizationResponse.LoginResponse
             {
@@ -79,6 +89,7 @@ namespace PRM_Backend_Server.Controllers
             });
         }
 
+        [Authorize]
         [HttpPost("change-password")]
         public async Task<ActionResult<AuthorizationResponse.ChangePasswordResponse>> ChangePassword([FromBody] AuthorizationRequest.ChangePasswordRequest request)
         {
@@ -88,7 +99,12 @@ namespace PRM_Backend_Server.Controllers
             if (request.newPassword != request.confirmNewPassword)
                 return BadRequest(new AuthorizationResponse.ChangePasswordResponse { message = "New password and confirmation do not match" });
 
-            var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == request.email);
+            // Extract email from JWT Token instead of relying on the client request body
+            var emailClaim = User.FindFirst(ClaimTypes.Email)?.Value;
+            if (string.IsNullOrEmpty(emailClaim))
+                return Unauthorized(new AuthorizationResponse.ChangePasswordResponse { message = "Invalid token" });
+
+            var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == emailClaim);
             if (user == null)
                 return NotFound(new AuthorizationResponse.ChangePasswordResponse { message = "User not found" });
 
@@ -166,27 +182,47 @@ namespace PRM_Backend_Server.Controllers
             });
         }
 
-        // Simple salted SHA256 password hashing for demo purposes.
         private static string HashPassword(string password)
         {
-            var salt = Guid.NewGuid().ToString("N");
-            using var sha = SHA256.Create();
-            var combined = salt + password;
-            var hash = sha.ComputeHash(Encoding.UTF8.GetBytes(combined));
-            return salt + ":" + Convert.ToHexString(hash);
+            return BCrypt.Net.BCrypt.HashPassword(password);
         }
 
-        private static bool VerifyPassword(string password, string stored)
+        private static bool VerifyPassword(string password, string storedHash)
         {
-            if (string.IsNullOrEmpty(stored)) return false;
-            var parts = stored.Split(':');
-            if (parts.Length != 2) return false;
-            var salt = parts[0];
-            var hashHex = parts[1];
-            using var sha = SHA256.Create();
-            var computed = sha.ComputeHash(Encoding.UTF8.GetBytes(salt + password));
-            var computedHex = Convert.ToHexString(computed);
-            return StringComparer.OrdinalIgnoreCase.Compare(computedHex, hashHex) == 0;
+            try
+            {
+                return BCrypt.Net.BCrypt.Verify(password, storedHash);
+            }
+            catch (BCrypt.Net.SaltParseException)
+            {
+                return false;
+            }
+        }
+
+        private string GenerateJwtToken(User user)
+        {
+            var jwtKeyStr = _configuration["Jwt:Key"] ?? throw new ArgumentNullException("Jwt:Key is missing in appsettings.json");
+            var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKeyStr));
+
+            var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256); 
+
+            var claims = new[]
+            {
+                new Claim(JwtRegisteredClaimNames.Sub, user.UserId.ToString()),
+                new Claim(ClaimTypes.Email, user.Email),
+                new Claim(ClaimTypes.Role, user.Role ?? "customer"),
+                new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+            };
+
+            var token = new JwtSecurityToken(
+                issuer: _configuration["Jwt:Issuer"],
+                audience: _configuration["Jwt:Audience"],
+                claims: claims,
+                expires: DateTime.UtcNow.AddHours(2),
+                signingCredentials: creds
+            );
+
+            return new JwtSecurityTokenHandler().WriteToken(token);
         }
     }
 }

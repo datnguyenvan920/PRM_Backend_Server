@@ -27,6 +27,9 @@ public partial class User
 
     public DateTime? UpdatedAt { get; set; }
 
+    public string? RefreshToken { get; set; }
+    public DateTime? RefreshTokenExpirationTime { get; set; }
+
     public virtual ICollection<Booking> BookingCustomers { get; set; } = new List<Booking>();
 
     public virtual ICollection<Booking> BookingWorkers { get; set; } = new List<Booking>();
