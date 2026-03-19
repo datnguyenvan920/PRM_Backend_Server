@@ -163,6 +163,8 @@ public partial class HomeServiceAppContext : DbContext
             entity.Property(e => e.Role)
                 .HasMaxLength(20)
                 .HasDefaultValue("customer");
+            entity.Property(e => e.RefreshToken).HasMaxLength(255);
+            entity.Property(e => e.RefreshTokenExpirationTime).HasColumnType("datetime2");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("(sysdatetime())");
         });
 
