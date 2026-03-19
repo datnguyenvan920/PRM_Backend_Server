@@ -27,33 +27,6 @@ namespace PRM_Backend_Server.Controllers
             _context = context;
         }
 
-        [HttpGet]
-        public async Task<ActionResult<IEnumerable<PaymentResponse>>> GetAllPayments()
-        {
-            var payments = await _context.Payments
-                .Include(p => p.Booking)
-                .OrderByDescending(p => p.PaidAt ?? DateTime.MinValue)
-                .ThenByDescending(p => p.PaymentId)
-                .ToListAsync();
-
-            return Ok(payments.Select(MapPaymentResponse));
-        }
-
-        [HttpGet("{id:int}")]
-        public async Task<ActionResult<PaymentResponse>> GetPaymentById(int id)
-        {
-            var payment = await _context.Payments
-                .Include(p => p.Booking)
-                .FirstOrDefaultAsync(p => p.PaymentId == id);
-
-            if (payment == null)
-            {
-                return NotFound(new { message = "Payment not found" });
-            }
-
-            return Ok(MapPaymentResponse(payment));
-        }
-
         [HttpGet("booking/{bookingId:int}")]
         public async Task<ActionResult<IEnumerable<PaymentResponse>>> GetPaymentsByBooking(int bookingId)
         {
@@ -69,28 +42,37 @@ namespace PRM_Backend_Server.Controllers
         [HttpPost]
         public async Task<ActionResult<PaymentResponse>> CreatePayment([FromBody] PaymentRequest.CreatePaymentRequest request)
         {
-            if (request == null || string.IsNullOrWhiteSpace(request.PaymentMethod) || !ValidMethods.Contains(request.PaymentMethod))
+            if (request == null)
+            {
+                return BadRequest(new { message = "Invalid request" });
+            }
+
+            if (string.IsNullOrWhiteSpace(request.PaymentMethod) || !ValidMethods.Contains(request.PaymentMethod))
             {
                 return BadRequest(new { message = "Invalid payment method" });
             }
 
-            var booking = await _context.Bookings.FirstOrDefaultAsync(b => b.BookingId == request.BookingId);
+            var booking = await _context.Bookings
+                .FirstOrDefaultAsync(b => b.BookingId == request.BookingId);
+
             if (booking == null)
             {
                 return BadRequest(new { message = "Booking does not exist" });
             }
 
-            var existingPaidPayment = await _context.Payments.AnyAsync(p => p.BookingId == request.BookingId && p.PaymentStatus == "paid");
-            if (existingPaidPayment)
+            var existed = await _context.Payments
+                .FirstOrDefaultAsync(p => p.BookingId == request.BookingId);
+
+            if (existed != null)
             {
-                return BadRequest(new { message = "This booking has already been paid" });
+                return BadRequest(new { message = "This booking already has a payment" });
             }
 
             var payment = new Payment
             {
                 BookingId = request.BookingId,
                 PaymentMethod = request.PaymentMethod.ToLowerInvariant(),
-                PaymentStatus = request.PaymentMethod.Equals("cash", StringComparison.OrdinalIgnoreCase) ? "pending" : "pending",
+                PaymentStatus = "pending",
                 TransactionCode = request.TransactionCode,
                 PaidAt = null
             };
@@ -99,7 +81,8 @@ namespace PRM_Backend_Server.Controllers
             await _context.SaveChangesAsync();
 
             payment.Booking = booking;
-            return CreatedAtAction(nameof(GetPaymentById), new { id = payment.PaymentId }, MapPaymentResponse(payment));
+
+            return CreatedAtAction(nameof(GetPaymentsByBooking), new { bookingId = payment.BookingId }, MapPaymentResponse(payment));
         }
 
         [HttpPut("{id:int}/status")]
@@ -120,20 +103,16 @@ namespace PRM_Backend_Server.Controllers
             }
 
             payment.PaymentStatus = request.PaymentStatus.ToLowerInvariant();
-            payment.TransactionCode = string.IsNullOrWhiteSpace(request.TransactionCode)
-                ? payment.TransactionCode
-                : request.TransactionCode.Trim();
 
-            if (payment.PaymentStatus == "paid")
+            if (request.TransactionCode != null)
             {
-                payment.PaidAt = DateTime.Now;
+                payment.TransactionCode = request.TransactionCode;
             }
-            else if (payment.PaymentStatus == "failed")
-            {
-                payment.PaidAt = null;
-            }
+
+            payment.PaidAt = payment.PaymentStatus == "paid" ? DateTime.Now : null;
 
             await _context.SaveChangesAsync();
+
             return Ok(MapPaymentResponse(payment));
         }
 

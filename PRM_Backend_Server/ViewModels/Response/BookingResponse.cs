@@ -19,5 +19,42 @@ namespace PRM_Backend_Server.ViewModels.Response
         public string? Status { get; set; }
         public DateTime? CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
+
+        public PackageInfoResponse? Package { get; set; }
+        public UserInfoResponse? Customer { get; set; }
+        public UserInfoResponse? Worker { get; set; }
+        public List<RatingInfoResponse>? Ratings { get; set; }
+    }
+
+    public class PackageInfoResponse
+    {
+        public int PackageId { get; set; }
+        public string PackageName { get; set; } = string.Empty;
+        public string? Description { get; set; }
+        public decimal Price { get; set; }
+        public int DurationHours { get; set; }
+        public CategoryInfoResponse? Category { get; set; }
+    }
+
+    public class CategoryInfoResponse
+    {
+        public int CategoryId { get; set; }
+        public string CategoryName { get; set; } = string.Empty;
+    }
+
+    public class UserInfoResponse
+    {
+        public int UserId { get; set; }
+        public string FullName { get; set; } = string.Empty;
+        public string Email { get; set; } = string.Empty;
+        public string? Phone { get; set; }
+    }
+
+    public class RatingInfoResponse
+    {
+        public int RatingId { get; set; }
+        public int RatingScore { get; set; }
+        public string? Comment { get; set; }
+        public DateTime? CreatedAt { get; set; }
     }
 }

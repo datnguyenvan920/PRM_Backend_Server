@@ -17,27 +17,16 @@ namespace PRM_Backend_Server.Controllers
             _context = context;
         }
 
-        [HttpGet]
-        public async Task<ActionResult<IEnumerable<RatingResponse>>> GetAllRatings()
-        {
-            var ratings = await _context.Ratings
-                .Include(r => r.Booking)
-                .Include(r => r.Customer)
-                .Include(r => r.Worker)
-                .OrderByDescending(r => r.CreatedAt)
-                .ToListAsync();
-
-            return Ok(ratings.Select(MapRatingResponse));
-        }
-
-        [HttpGet("{id:int}")]
-        public async Task<ActionResult<RatingResponse>> GetRatingById(int id)
+        [HttpGet("booking/{bookingId:int}")]
+        public async Task<ActionResult<RatingResponse>> GetRatingByBooking(int bookingId)
         {
             var rating = await _context.Ratings
                 .Include(r => r.Booking)
                 .Include(r => r.Customer)
                 .Include(r => r.Worker)
-                .FirstOrDefaultAsync(r => r.RatingId == id);
+                .Where(r => r.BookingId == bookingId)
+                .OrderByDescending(r => r.CreatedAt)
+                .FirstOrDefaultAsync();
 
             if (rating == null)
             {
@@ -47,28 +36,14 @@ namespace PRM_Backend_Server.Controllers
             return Ok(MapRatingResponse(rating));
         }
 
-        [HttpGet("worker/{workerId:int}")]
-        public async Task<ActionResult<IEnumerable<RatingResponse>>> GetRatingsByWorker(int workerId)
+        [HttpGet("customer/{customerId:int}")]
+        public async Task<ActionResult<IEnumerable<RatingResponse>>> GetRatingsByCustomer(int customerId)
         {
             var ratings = await _context.Ratings
                 .Include(r => r.Booking)
                 .Include(r => r.Customer)
                 .Include(r => r.Worker)
-                .Where(r => r.WorkerId == workerId)
-                .OrderByDescending(r => r.CreatedAt)
-                .ToListAsync();
-
-            return Ok(ratings.Select(MapRatingResponse));
-        }
-
-        [HttpGet("booking/{bookingId:int}")]
-        public async Task<ActionResult<IEnumerable<RatingResponse>>> GetRatingsByBooking(int bookingId)
-        {
-            var ratings = await _context.Ratings
-                .Include(r => r.Booking)
-                .Include(r => r.Customer)
-                .Include(r => r.Worker)
-                .Where(r => r.BookingId == bookingId)
+                .Where(r => r.CustomerId == customerId)
                 .OrderByDescending(r => r.CreatedAt)
                 .ToListAsync();
 
@@ -98,30 +73,32 @@ namespace PRM_Backend_Server.Controllers
                 return BadRequest(new { message = "Booking does not exist" });
             }
 
+            if (booking.CustomerId != request.CustomerId)
+            {
+                return BadRequest(new { message = "Customer does not match booking" });
+            }
+
             if (!string.Equals(booking.Status, "completed", StringComparison.OrdinalIgnoreCase))
             {
                 return BadRequest(new { message = "Only completed bookings can be rated" });
             }
 
-            if (booking.WorkerId == null)
+            if (!booking.WorkerId.HasValue)
             {
-                return BadRequest(new { message = "This booking has no assigned worker" });
+                return BadRequest(new { message = "Booking does not have worker to rate" });
             }
 
-            if (booking.CustomerId != request.CustomerId)
-            {
-                return BadRequest(new { message = "This customer is not allowed to rate the booking" });
-            }
+            var existed = await _context.Ratings
+                .FirstOrDefaultAsync(r => r.BookingId == request.BookingId && r.CustomerId == request.CustomerId);
 
-            var existed = await _context.Ratings.AnyAsync(r => r.BookingId == request.BookingId && r.CustomerId == request.CustomerId);
-            if (existed)
+            if (existed != null)
             {
-                return BadRequest(new { message = "This booking has already been rated" });
+                return BadRequest(new { message = "This booking has already been rated by this customer" });
             }
 
             var rating = new Rating
             {
-                BookingId = booking.BookingId,
+                BookingId = request.BookingId,
                 CustomerId = request.CustomerId,
                 WorkerId = booking.WorkerId.Value,
                 RatingScore = request.RatingScore,
@@ -136,7 +113,61 @@ namespace PRM_Backend_Server.Controllers
             rating.Customer = booking.Customer;
             rating.Worker = booking.Worker!;
 
-            return CreatedAtAction(nameof(GetRatingById), new { id = rating.RatingId }, MapRatingResponse(rating));
+            return Ok(MapRatingResponse(rating));
+        }
+
+        [HttpPut("{ratingId:int}")]
+        public async Task<ActionResult<RatingResponse>> UpdateRating(int ratingId, [FromBody] RatingRequest.UpdateRatingRequest request)
+        {
+            if (request == null)
+            {
+                return BadRequest(new { message = "Invalid request" });
+            }
+
+            var rating = await _context.Ratings
+                .Include(r => r.Booking)
+                .Include(r => r.Customer)
+                .Include(r => r.Worker)
+                .FirstOrDefaultAsync(r => r.RatingId == ratingId);
+
+            if (rating == null)
+            {
+                return NotFound(new { message = "Rating not found" });
+            }
+
+            if (request.RatingScore.HasValue)
+            {
+                if (request.RatingScore.Value < 1 || request.RatingScore.Value > 5)
+                {
+                    return BadRequest(new { message = "Rating score must be between 1 and 5" });
+                }
+
+                rating.RatingScore = request.RatingScore.Value;
+            }
+
+            if (request.Comment != null)
+            {
+                rating.Comment = request.Comment;
+            }
+
+            await _context.SaveChangesAsync();
+
+            return Ok(MapRatingResponse(rating));
+        }
+
+        [HttpDelete("{ratingId:int}")]
+        public async Task<IActionResult> DeleteRating(int ratingId)
+        {
+            var rating = await _context.Ratings.FirstOrDefaultAsync(r => r.RatingId == ratingId);
+            if (rating == null)
+            {
+                return NotFound(new { message = "Rating not found" });
+            }
+
+            _context.Ratings.Remove(rating);
+            await _context.SaveChangesAsync();
+
+            return Ok(new { message = "Rating deleted successfully" });
         }
 
         private static RatingResponse MapRatingResponse(Rating rating)

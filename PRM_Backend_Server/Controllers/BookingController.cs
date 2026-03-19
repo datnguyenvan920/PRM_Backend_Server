@@ -22,19 +22,6 @@ namespace PRM_Backend_Server.Controllers
             _context = context;
         }
 
-        [HttpGet]
-        public async Task<ActionResult<IEnumerable<BookingResponse>>> GetAllBookings()
-        {
-            var bookings = await _context.Bookings
-                .Include(b => b.Customer)
-                .Include(b => b.Worker)
-                .Include(b => b.Package)
-                .OrderByDescending(b => b.CreatedAt)
-                .ToListAsync();
-
-            return Ok(bookings.Select(MapBookingResponse));
-        }
-
         [HttpGet("{id:int}")]
         public async Task<ActionResult<BookingResponse>> GetBookingById(int id)
         {
@@ -42,6 +29,8 @@ namespace PRM_Backend_Server.Controllers
                 .Include(b => b.Customer)
                 .Include(b => b.Worker)
                 .Include(b => b.Package)
+                    .ThenInclude(p => p.Category)
+                .Include(b => b.Ratings)
                 .FirstOrDefaultAsync(b => b.BookingId == id);
 
             if (booking == null)
@@ -59,22 +48,9 @@ namespace PRM_Backend_Server.Controllers
                 .Include(b => b.Customer)
                 .Include(b => b.Worker)
                 .Include(b => b.Package)
+                    .ThenInclude(p => p.Category)
+                .Include(b => b.Ratings)
                 .Where(b => b.CustomerId == customerId)
-                .OrderByDescending(b => b.BookingDate)
-                .ThenByDescending(b => b.StartTime)
-                .ToListAsync();
-
-            return Ok(bookings.Select(MapBookingResponse));
-        }
-
-        [HttpGet("worker/{workerId:int}")]
-        public async Task<ActionResult<IEnumerable<BookingResponse>>> GetBookingsByWorker(int workerId)
-        {
-            var bookings = await _context.Bookings
-                .Include(b => b.Customer)
-                .Include(b => b.Worker)
-                .Include(b => b.Package)
-                .Where(b => b.WorkerId == workerId)
                 .OrderByDescending(b => b.BookingDate)
                 .ThenByDescending(b => b.StartTime)
                 .ToListAsync();
@@ -100,13 +76,18 @@ namespace PRM_Backend_Server.Controllers
                 return BadRequest(new { message = "Booking date cannot be in the past" });
             }
 
-            var customer = await _context.Users.FirstOrDefaultAsync(u => u.UserId == request.CustomerId && u.Role == "customer");
+            var customer = await _context.Users
+                .FirstOrDefaultAsync(u => u.UserId == request.CustomerId && u.Role == "customer");
+
             if (customer == null)
             {
                 return BadRequest(new { message = "Customer does not exist" });
             }
 
-            var package = await _context.ServicePackages.FirstOrDefaultAsync(p => p.PackageId == request.PackageId && (p.IsActive ?? false));
+            var package = await _context.ServicePackages
+                .Include(p => p.Category)
+                .FirstOrDefaultAsync(p => p.PackageId == request.PackageId && (p.IsActive ?? false));
+
             if (package == null)
             {
                 return BadRequest(new { message = "Service package does not exist or is inactive" });
@@ -115,8 +96,12 @@ namespace PRM_Backend_Server.Controllers
             User? workerUser = null;
             if (request.WorkerId.HasValue)
             {
-                workerUser = await _context.Users.FirstOrDefaultAsync(u => u.UserId == request.WorkerId.Value && u.Role == "worker");
-                var workerInfo = await _context.Workers.FirstOrDefaultAsync(w => w.WorkerId == request.WorkerId.Value && (w.IsAvailable ?? false));
+                workerUser = await _context.Users
+                    .FirstOrDefaultAsync(u => u.UserId == request.WorkerId.Value && u.Role == "worker");
+
+                var workerInfo = await _context.Workers
+                    .FirstOrDefaultAsync(w => w.WorkerId == request.WorkerId.Value && (w.IsAvailable ?? false));
+
                 if (workerUser == null || workerInfo == null)
                 {
                     return BadRequest(new { message = "Worker does not exist or is unavailable" });
@@ -146,17 +131,25 @@ namespace PRM_Backend_Server.Controllers
             booking.Customer = customer;
             booking.Worker = workerUser;
             booking.Package = package;
+            booking.Ratings = new List<Rating>();
 
             return CreatedAtAction(nameof(GetBookingById), new { id = booking.BookingId }, MapBookingResponse(booking));
         }
 
-        [HttpPut("{id:int}/assign-worker")]
-        public async Task<ActionResult<BookingResponse>> AssignWorker(int id, [FromBody] BookingRequest.AssignWorkerRequest request)
+        [HttpPut("{id:int}")]
+        public async Task<ActionResult<BookingResponse>> UpdateBooking(int id, [FromBody] BookingRequest.UpdateBookingRequest request)
         {
+            if (request == null)
+            {
+                return BadRequest(new { message = "Invalid request" });
+            }
+
             var booking = await _context.Bookings
                 .Include(b => b.Customer)
                 .Include(b => b.Worker)
                 .Include(b => b.Package)
+                    .ThenInclude(p => p.Category)
+                .Include(b => b.Ratings)
                 .FirstOrDefaultAsync(b => b.BookingId == id);
 
             if (booking == null)
@@ -164,61 +157,74 @@ namespace PRM_Backend_Server.Controllers
                 return NotFound(new { message = "Booking not found" });
             }
 
-            if (booking.Status?.Equals("cancelled", StringComparison.OrdinalIgnoreCase) == true)
+            if (request.WorkerId.HasValue)
             {
-                return BadRequest(new { message = "Cannot assign worker to a cancelled booking" });
+                var workerUser = await _context.Users
+                    .FirstOrDefaultAsync(u => u.UserId == request.WorkerId.Value && u.Role == "worker");
+
+                var workerInfo = await _context.Workers
+                    .FirstOrDefaultAsync(w => w.WorkerId == request.WorkerId.Value && (w.IsAvailable ?? false));
+
+                if (workerUser == null || workerInfo == null)
+                {
+                    return BadRequest(new { message = "Worker does not exist or is unavailable" });
+                }
+
+                booking.WorkerId = request.WorkerId.Value;
+                booking.Worker = workerUser;
             }
 
-            var workerUser = await _context.Users.FirstOrDefaultAsync(u => u.UserId == request.WorkerId && u.Role == "worker");
-            var worker = await _context.Workers.FirstOrDefaultAsync(w => w.WorkerId == request.WorkerId && (w.IsAvailable ?? false));
-            if (workerUser == null || worker == null)
+            if (request.BookingDate.HasValue)
             {
-                return BadRequest(new { message = "Worker does not exist or is unavailable" });
+                if (request.BookingDate.Value < DateOnly.FromDateTime(DateTime.Today))
+                {
+                    return BadRequest(new { message = "Booking date cannot be in the past" });
+                }
+
+                booking.BookingDate = request.BookingDate.Value;
             }
 
-            booking.WorkerId = request.WorkerId;
-            booking.Status = booking.Status?.Equals("pending", StringComparison.OrdinalIgnoreCase) == true ? "confirmed" : booking.Status;
+            if (request.StartTime.HasValue)
+            {
+                booking.StartTime = request.StartTime.Value;
+                booking.EndTime = request.StartTime.Value.AddHours(booking.Package.DurationHours);
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.Address))
+            {
+                booking.Address = request.Address.Trim();
+            }
+
+            if (request.Note != null)
+            {
+                booking.Note = request.Note;
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.Status))
+            {
+                if (!ValidStatuses.Contains(request.Status))
+                {
+                    return BadRequest(new { message = "Invalid booking status" });
+                }
+
+                booking.Status = request.Status.ToLowerInvariant();
+            }
+
             booking.UpdatedAt = DateTime.Now;
-
             await _context.SaveChangesAsync();
 
-            booking.Worker = workerUser;
             return Ok(MapBookingResponse(booking));
         }
 
-        [HttpPut("{id:int}/status")]
-        public async Task<ActionResult<BookingResponse>> UpdateStatus(int id, [FromBody] BookingRequest.UpdateBookingStatusRequest request)
+        [HttpDelete("{id:int}")]
+        public async Task<ActionResult<BookingResponse>> DeleteBooking(int id)
         {
-            if (request == null || string.IsNullOrWhiteSpace(request.Status) || !ValidStatuses.Contains(request.Status))
-            {
-                return BadRequest(new { message = "Invalid booking status" });
-            }
-
             var booking = await _context.Bookings
                 .Include(b => b.Customer)
                 .Include(b => b.Worker)
                 .Include(b => b.Package)
-                .FirstOrDefaultAsync(b => b.BookingId == id);
-
-            if (booking == null)
-            {
-                return NotFound(new { message = "Booking not found" });
-            }
-
-            booking.Status = request.Status.ToLowerInvariant();
-            booking.UpdatedAt = DateTime.Now;
-            await _context.SaveChangesAsync();
-
-            return Ok(MapBookingResponse(booking));
-        }
-
-        [HttpPut("{id:int}/cancel")]
-        public async Task<ActionResult<BookingResponse>> CancelBooking(int id)
-        {
-            var booking = await _context.Bookings
-                .Include(b => b.Customer)
-                .Include(b => b.Worker)
-                .Include(b => b.Package)
+                    .ThenInclude(p => p.Category)
+                .Include(b => b.Ratings)
                 .FirstOrDefaultAsync(b => b.BookingId == id);
 
             if (booking == null)
@@ -233,6 +239,7 @@ namespace PRM_Backend_Server.Controllers
 
             booking.Status = "cancelled";
             booking.UpdatedAt = DateTime.Now;
+
             await _context.SaveChangesAsync();
 
             return Ok(MapBookingResponse(booking));
@@ -261,7 +268,41 @@ namespace PRM_Backend_Server.Controllers
                 TotalPrice = booking.TotalPrice,
                 Status = booking.Status,
                 CreatedAt = booking.CreatedAt,
-                UpdatedAt = booking.UpdatedAt
+                UpdatedAt = booking.UpdatedAt,
+                Package = booking.Package == null ? null : new PackageInfoResponse
+                {
+                    PackageId = booking.Package.PackageId,
+                    PackageName = booking.Package.PackageName,
+                    Description = booking.Package.Description,
+                    Price = booking.Package.Price,
+                    DurationHours = booking.Package.DurationHours,
+                    Category = booking.Package.Category == null ? null : new CategoryInfoResponse
+                    {
+                        CategoryId = booking.Package.Category.CategoryId,
+                        CategoryName = booking.Package.Category.CategoryName
+                    }
+                },
+                Customer = booking.Customer == null ? null : new UserInfoResponse
+                {
+                    UserId = booking.Customer.UserId,
+                    FullName = booking.Customer.FullName,
+                    Email = booking.Customer.Email,
+                    Phone = booking.Customer.Phone
+                },
+                Worker = booking.Worker == null ? null : new UserInfoResponse
+                {
+                    UserId = booking.Worker.UserId,
+                    FullName = booking.Worker.FullName,
+                    Email = booking.Worker.Email,
+                    Phone = booking.Worker.Phone
+                },
+                Ratings = booking.Ratings?.Select(r => new RatingInfoResponse
+                {
+                    RatingId = r.RatingId,
+                    RatingScore = r.RatingScore ?? 0,
+                    Comment = r.Comment,
+                    CreatedAt = r.CreatedAt
+                }).OrderByDescending(r => r.CreatedAt).ToList()
             };
         }
     }
